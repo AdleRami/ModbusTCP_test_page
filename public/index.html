@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Modbus TCP Test Page</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">Node.js Modbus TCP Master</p>
+          <h1>Modbus TCP Test Page</h1>
+          <p class="header-text">
+            Holding Register 기준으로 PLC 또는 Modbus TCP Slave Simulator를
+            테스트할 수 있는 간단한 웹 페이지입니다.
+          </p>
+        </div>
+        <div class="address-note">
+          <strong>주소 표기 안내</strong>
+          <span>UI에는 0x00, 0x10처럼 표시하지만 실제 라이브러리 호출은 0 기반 decimal offset을 사용합니다.</span>
+        </div>
+      </header>
+
+      <div id="popupBox" class="popup-box" aria-live="polite"></div>
+
+      <main class="panel-grid">
+        <section class="panel">
+          <div class="panel-title-row">
+            <h2>Connection Panel</h2>
+          </div>
+
+          <div class="form-grid">
+            <label class="field">
+              <span>Slave IP Address</span>
+              <input id="ipAddress" type="text" value="192.168.2.1" />
+            </label>
+
+            <label class="field">
+              <span>Port</span>
+              <input id="port" type="number" min="1" max="65535" value="502" />
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="connectButton" class="button button-primary">Connect</button>
+            <button id="disconnectButton" class="button button-secondary">Disconnect</button>
+          </div>
+
+          <div class="status-box">
+            <span class="status-label">현재 연결 상태</span>
+            <span id="connectionStatus" class="status-badge status-disconnected">Disconnected</span>
+          </div>
+          <p id="statusMessage" class="status-message">연결 전입니다.</p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title-row">
+            <h2>Write Panel</h2>
+          </div>
+
+          <div class="register-list">
+            <div class="register-item">
+              <div class="register-meta">
+                <span class="register-name">CMD_CODE</span>
+                <span class="register-address">0x00</span>
+              </div>
+              <select id="cmdCode">
+                <option value="0">NONE</option>
+                <option value="1">DOOR_OPEN</option>
+                <option value="2">DOOR_CLOSE</option>
+                <option value="3">DOOR_STOP</option>
+                <option value="4">CONVEYOR_START</option>
+                <option value="5">CONVEYOR_STOP</option>
+                <option value="6">RESET</option>
+              </select>
+              <button class="button button-inline" data-write-single="CMD_CODE">Write</button>
+            </div>
+
+            <div class="register-item">
+              <div class="register-meta">
+                <span class="register-name">CMD_SEQ</span>
+                <span class="register-address">0x01</span>
+              </div>
+              <input id="cmdSeq" type="number" min="0" max="65535" value="1" />
+              <button class="button button-inline" data-write-single="CMD_SEQ">Write</button>
+            </div>
+
+            <div class="register-item">
+              <div class="register-meta">
+                <span class="register-name">HEARTBEAT_ACS</span>
+                <span class="register-address">0x02</span>
+              </div>
+              <input id="heartbeatAcs" type="number" min="0" max="65535" value="0" />
+              <button class="button button-inline" data-write-single="HEARTBEAT_ACS">Write</button>
+            </div>
+          </div>
+
+          <div class="button-row button-row-end">
+            <button id="writeAllButton" class="button button-primary">Write All (0x00~0x02)</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title-row">
+            <h2>Read Panel</h2>
+          </div>
+
+          <div class="button-stack">
+            <button class="button button-secondary" data-read-single="PLC_STATUS">Read PLC_STATUS (0x10)</button>
+            <button class="button button-secondary" data-read-single="DOOR_STATUS">Read DOOR_STATUS (0x11)</button>
+            <button class="button button-secondary" data-read-single="CONVEYOR_STATUS">Read CONVEYOR_STATUS (0x12)</button>
+            <button class="button button-secondary" data-read-single="ERROR_CODE">Read ERROR_CODE (0x13)</button>
+            <button id="readAllButton" class="button button-primary">Read All (0x10~0x13)</button>
+          </div>
+
+          <div id="readResults" class="result-list"></div>
+        </section>
+
+        <section class="panel panel-wide">
+          <div class="panel-title-row">
+            <h2>Log Panel</h2>
+            <button id="clearLogButton" class="button button-ghost">Clear Log</button>
+          </div>
+
+          <div class="log-head">
+            <span>Time</span>
+            <span>Type</span>
+            <span>Message</span>
+          </div>
+          <div id="logList" class="log-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
