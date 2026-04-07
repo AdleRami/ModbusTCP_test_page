@@ -149,6 +149,7 @@ async function connectToSlave() {
     });
 
     setConnectionStatus(data.connection, { syncInputs: true });
+    resetCmdSeq();
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -163,6 +164,7 @@ async function disconnectFromSlave() {
     });
 
     setConnectionStatus(data.connection, { syncInputs: true });
+    resetCmdSeq();
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -184,6 +186,7 @@ async function writeCommandRegisters(mode, registerName) {
     });
 
     setConnectionStatus(data.connection);
+    increaseCmdSeq();
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -211,6 +214,7 @@ async function readStatusRegisters(mode, registerName) {
     mergeReadResults(data.data);
     renderReadResults();
     setConnectionStatus(data.connection);
+    increaseCmdSeq();
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -455,6 +459,29 @@ function getSingleWriteValue(registerName) {
   }
 
   throw new Error("쓰기 가능한 레지스터 이름이 아닙니다.");
+}
+
+// CMD_SEQ is used as a simple running sequence number.
+// Increase it after every successful Modbus read/write transaction so the
+// operator can compare it with the Modbus Transaction ID.
+function increaseCmdSeq() {
+  const currentValue = Number(elements.cmdSeq.value.trim());
+
+  if (!Number.isInteger(currentValue) || currentValue < 0 || currentValue > 65535) {
+    elements.cmdSeq.value = 1;
+    return;
+  }
+
+  if (currentValue >= 65535) {
+    elements.cmdSeq.value = 1;
+    return;
+  }
+
+  elements.cmdSeq.value = currentValue + 1;
+}
+
+function resetCmdSeq() {
+  elements.cmdSeq.value = 1;
 }
 
 function showPopup(message, type) {
