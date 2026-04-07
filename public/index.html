@@ -69,30 +69,11 @@
                 <option value="5">CONVEYOR_STOP</option>
                 <option value="6">RESET</option>
               </select>
-              <button class="button button-inline" data-write-single="CMD_CODE">Write</button>
-            </div>
-
-            <div class="register-item">
-              <div class="register-meta">
-                <span class="register-name">CMD_SEQ</span>
-                <span class="register-address">0x01</span>
-              </div>
-              <input id="cmdSeq" type="number" min="0" max="65535" value="1" />
-              <button class="button button-inline" data-write-single="CMD_SEQ">Write</button>
-            </div>
-
-            <div class="register-item">
-              <div class="register-meta">
-                <span class="register-name">HEARTBEAT_ACS</span>
-                <span class="register-address">0x02</span>
-              </div>
-              <input id="heartbeatAcs" type="number" min="0" max="65535" value="0" />
-              <button class="button button-inline" data-write-single="HEARTBEAT_ACS">Write</button>
             </div>
           </div>
 
           <div class="button-row button-row-end">
-            <button id="writeAllButton" class="button button-primary">Write All (0x00~0x02)</button>
+            <button id="writeAllButton" class="button button-primary">Write Command</button>
           </div>
         </section>
 

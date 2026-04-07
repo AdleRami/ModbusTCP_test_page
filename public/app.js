@@ -1,10 +1,5 @@
-const WRITE_REGISTERS = {
-  CMD_CODE: { address: "0x00" },
-  CMD_SEQ: { address: "0x01" },
-  HEARTBEAT_ACS: { address: "0x02" }
-};
-
 const FIXED_PORT = 502;
+const FIXED_HEARTBEAT_ACS = 0;
 
 const READ_REGISTERS = {
   PLC_STATUS: {
@@ -66,6 +61,7 @@ let currentConnection = {
   port: FIXED_PORT,
   errorMessage: ""
 };
+let nextCmdSeq = 1;
 
 const currentReadResults = {
   PLC_STATUS: null,
@@ -96,8 +92,6 @@ function cacheElements() {
   elements.connectionStatus = document.getElementById("connectionStatus");
   elements.statusMessage = document.getElementById("statusMessage");
   elements.cmdCode = document.getElementById("cmdCode");
-  elements.cmdSeq = document.getElementById("cmdSeq");
-  elements.heartbeatAcs = document.getElementById("heartbeatAcs");
   elements.writeAllButton = document.getElementById("writeAllButton");
   elements.readAllButton = document.getElementById("readAllButton");
   elements.readResults = document.getElementById("readResults");
@@ -109,15 +103,9 @@ function cacheElements() {
 function bindEvents() {
   elements.connectButton.addEventListener("click", connectToSlave);
   elements.disconnectButton.addEventListener("click", disconnectFromSlave);
-  elements.writeAllButton.addEventListener("click", () => writeCommandRegisters("block"));
+  elements.writeAllButton.addEventListener("click", writeCommandRegisters);
   elements.readAllButton.addEventListener("click", () => readStatusRegisters("all"));
   elements.clearLogButton.addEventListener("click", clearLogs);
-
-  document.querySelectorAll("[data-write-single]").forEach((button) => {
-    button.addEventListener("click", () => {
-      writeCommandRegisters("single", button.dataset.writeSingle);
-    });
-  });
 }
 
 async function connectToSlave() {
@@ -161,13 +149,13 @@ async function disconnectFromSlave() {
   }
 }
 
-async function writeCommandRegisters(mode, registerName) {
+async function writeCommandRegisters() {
   if (!ensureConnectedFromUi()) {
     return;
   }
 
   try {
-    const payload = buildWritePayload(mode, registerName);
+    const payload = buildWriteCommandPayload();
 
     const data = await requestJson("/api/write", {
       method: "POST",
@@ -203,7 +191,6 @@ async function readStatusRegisters(mode, registerName) {
     mergeReadResults(data.data);
     renderReadResults();
     setConnectionStatus(data.connection);
-    increaseCmdSeq();
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -392,26 +379,12 @@ function ensureConnectedFromUi() {
   return true;
 }
 
-function buildWritePayload(mode, registerName) {
-  if (mode === "single") {
-    const value = getSingleWriteValue(registerName);
-
-    if (!validateRegisterValue(String(value))) {
-      throw new Error("숫자 입력값이 허용 범위를 벗어났습니다.");
-    }
-
-    return {
-      mode: "single",
-      registerName,
-      value: Number(value)
-    };
-  }
-
+function buildWriteCommandPayload() {
   const cmdCode = elements.cmdCode.value;
-  const cmdSeq = elements.cmdSeq.value.trim();
-  const heartbeatAcs = elements.heartbeatAcs.value.trim();
+  const cmdSeq = nextCmdSeq;
+  const heartbeatAcs = FIXED_HEARTBEAT_ACS;
 
-  if (!validateRegisterValue(cmdCode) || !validateRegisterValue(cmdSeq) || !validateRegisterValue(heartbeatAcs)) {
+  if (!validateRegisterValue(String(cmdCode)) || !validateRegisterValue(String(cmdSeq)) || !validateRegisterValue(String(heartbeatAcs))) {
     throw new Error("숫자 입력값이 허용 범위를 벗어났습니다.");
   }
 
@@ -425,43 +398,25 @@ function buildWritePayload(mode, registerName) {
   };
 }
 
-function getSingleWriteValue(registerName) {
-  if (registerName === "CMD_CODE") {
-    return elements.cmdCode.value;
-  }
-
-  if (registerName === "CMD_SEQ") {
-    return elements.cmdSeq.value.trim();
-  }
-
-  if (registerName === "HEARTBEAT_ACS") {
-    return elements.heartbeatAcs.value.trim();
-  }
-
-  throw new Error("쓰기 가능한 레지스터 이름이 아닙니다.");
-}
-
-// CMD_SEQ is used as a simple running sequence number.
-// Increase it after every successful Modbus read/write transaction so the
-// operator can compare it with the Modbus Transaction ID.
+// CMD_SEQ is kept internally now because the UI only exposes CMD_CODE.
+// We send the current sequence value with Write Command and move to the
+// next value only after a successful command write.
 function increaseCmdSeq() {
-  const currentValue = Number(elements.cmdSeq.value.trim());
-
-  if (!Number.isInteger(currentValue) || currentValue < 0 || currentValue > 65535) {
-    elements.cmdSeq.value = 1;
+  if (!Number.isInteger(nextCmdSeq) || nextCmdSeq < 0 || nextCmdSeq > 65535) {
+    nextCmdSeq = 1;
     return;
   }
 
-  if (currentValue >= 65535) {
-    elements.cmdSeq.value = 1;
+  if (nextCmdSeq >= 65535) {
+    nextCmdSeq = 1;
     return;
   }
 
-  elements.cmdSeq.value = currentValue + 1;
+  nextCmdSeq += 1;
 }
 
 function resetCmdSeq() {
-  elements.cmdSeq.value = 1;
+  nextCmdSeq = 1;
 }
 
 function showPopup(message, type) {
