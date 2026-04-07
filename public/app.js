@@ -517,7 +517,7 @@ async function requestJson(url, options = {}) {
       ...options
     });
   } catch (error) {
-    throw new Error("서버에 연결할 수 없습니다. npm start 실행 여부를 확인하세요.");
+    throw new Error("서버에 연결할 수 없습니다. start 실행 여부를 확인하세요.");
   }
 
   let data;
