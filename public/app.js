@@ -117,12 +117,6 @@ function bindEvents() {
       writeCommandRegisters("single", button.dataset.writeSingle);
     });
   });
-
-  document.querySelectorAll("[data-read-single]").forEach((button) => {
-    button.addEventListener("click", () => {
-      readStatusRegisters("single", button.dataset.readSingle);
-    });
-  });
 }
 
 async function connectToSlave() {
