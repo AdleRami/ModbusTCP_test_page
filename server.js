@@ -94,11 +94,18 @@ const REGISTER_DEFINITIONS = {
     address: 0x13,
     description: "Error code",
     valueMap: null
+  },
+  HEARTBEAT_PLC: {
+    address: 0x14,
+    description: "PLC heartbeat counter",
+    valueMap: null
   }
 };
 
 const WRITE_REGISTER_ORDER = ["CMD_CODE", "CMD_SEQ", "HEARTBEAT_ACS"];
-const READ_REGISTER_ORDER = ["PLC_STATUS", "DOOR_STATUS", "CONVEYOR_STATUS", "ERROR_CODE"];
+const COMMAND_BLOCK_REGISTER_ORDER = ["CMD_CODE", "CMD_SEQ"];
+const READ_ALL_REGISTER_ORDER = ["PLC_STATUS", "DOOR_STATUS", "CONVEYOR_STATUS", "ERROR_CODE"];
+const READ_REGISTER_ORDER = [...READ_ALL_REGISTER_ORDER, "HEARTBEAT_PLC"];
 const MAX_LOG_ENTRIES = 300;
 const MIN_MBAP_HEADER_LENGTH = 6;
 
@@ -159,7 +166,7 @@ app.post("/api/disconnect", async (req, res) => {
 
 // Write API
 // mode=single : write one holding register
-// mode=block  : write 0x00~0x02 in one request
+// mode=block  : write CMD_CODE + CMD_SEQ in one request
 app.post("/api/write", async (req, res) => {
   try {
     const mode = String(req.body.mode || "block").trim();
@@ -167,7 +174,7 @@ app.post("/api/write", async (req, res) => {
 
     res.json({
       success: true,
-      message: mode === "single" ? "선택한 레지스터에 값을 썼습니다." : "명령 블록 0x00~0x02를 전송했습니다.",
+      message: mode === "single" ? "선택한 레지스터에 값을 썼습니다." : "명령 블록 0x00~0x01을 전송했습니다.",
       wrote,
       connection: getConnectionStatus()
     });
@@ -243,6 +250,7 @@ function createPacketTraceState() {
     rxListener: null,
     closeListener: null,
     errorListener: null,
+    loggedTransactionIds: new Set(),
     txBuffer: Buffer.alloc(0),
     rxBuffer: Buffer.alloc(0)
   };
@@ -367,7 +375,9 @@ function tracePacketChunk(direction, buffer) {
   packetTraceState[bufferKey] = extracted.remaining;
 
   extracted.frames.forEach((frame) => {
-    appendLog(direction, buildByteLogMessage(frame));
+    if (shouldLogPacketFrame(direction, frame)) {
+      appendLog(direction, buildByteLogMessage(frame));
+    }
   });
 }
 
@@ -400,6 +410,47 @@ function extractModbusTcpFrames(buffer) {
 
 function buildByteLogMessage(frame) {
   return `Bytes (${frame.length}): ${formatPacketBytes(frame)}`;
+}
+
+// The log panel should stay focused on operator actions.
+// Keep raw bytes only for:
+// - Write Command: write multiple registers at 0x00~0x01
+// - Read Oven Status: read holding registers 0x10~0x13
+// Background heartbeat traffic is ignored.
+function shouldLogPacketFrame(direction, frame) {
+  if (!Buffer.isBuffer(frame) || frame.length < 12) {
+    return false;
+  }
+
+  const transactionId = frame.readUInt16BE(0);
+
+  if (direction === "TX") {
+    const functionCode = frame[7];
+    const startAddress = frame.readUInt16BE(8);
+    const registerCount = frame.readUInt16BE(10);
+    const isCommandWrite =
+      functionCode === 0x10 &&
+      startAddress === REGISTER_DEFINITIONS.CMD_CODE.address &&
+      registerCount === COMMAND_BLOCK_REGISTER_ORDER.length;
+    const isReadAll =
+      functionCode === 0x03 &&
+      startAddress === REGISTER_DEFINITIONS.PLC_STATUS.address &&
+      registerCount === READ_ALL_REGISTER_ORDER.length;
+
+    if (isCommandWrite || isReadAll) {
+      packetTraceState.loggedTransactionIds.add(transactionId);
+      return true;
+    }
+
+    return false;
+  }
+
+  if (packetTraceState.loggedTransactionIds.has(transactionId)) {
+    packetTraceState.loggedTransactionIds.delete(transactionId);
+    return true;
+  }
+
+  return false;
 }
 
 function formatPacketBytes(buffer) {
@@ -467,7 +518,7 @@ async function disconnectFromSlave() {
 // Write holding registers for the ACS command area.
 // Supported modes:
 // - single: write one register such as CMD_SEQ
-// - block : write 0x00, 0x01, 0x02 continuously in one Modbus request
+// - block : write CMD_CODE and CMD_SEQ together in one Modbus request
 //
 // If you later add another write register, update:
 // - REGISTER_DEFINITIONS
@@ -498,20 +549,18 @@ async function writeCommandRegisters(mode, body) {
     } else if (mode === "block") {
       const cmdCode = parseRegisterValue(body.values && body.values.cmdCode, "CMD_CODE");
       const cmdSeq = parseRegisterValue(body.values && body.values.cmdSeq, "CMD_SEQ");
-      const heartbeatAcs = parseRegisterValue(body.values && body.values.heartbeatAcs, "HEARTBEAT_ACS");
 
       validateWriteValue("CMD_CODE", cmdCode);
       validateWriteValue("CMD_SEQ", cmdSeq);
-      validateWriteValue("HEARTBEAT_ACS", heartbeatAcs);
 
-      const values = [cmdCode, cmdSeq, heartbeatAcs];
+      const values = [cmdCode, cmdSeq];
       const startAddress = REGISTER_DEFINITIONS.CMD_CODE.address;
 
       // writeRegisters(startAddress, values)
-      // This sends 0x00~0x02 as one continuous block write.
+      // This sends 0x00~0x01 as one continuous block write.
       await modbusClient.writeRegisters(startAddress, values);
 
-      wrote = WRITE_REGISTER_ORDER.map((registerName, index) => buildRegisterResult(registerName, values[index]));
+      wrote = COMMAND_BLOCK_REGISTER_ORDER.map((registerName, index) => buildRegisterResult(registerName, values[index]));
     } else {
       throw createValidationError("write mode 값이 올바르지 않습니다.");
     }
@@ -559,9 +608,9 @@ async function readStatusRegisters(mode, registerName) {
 
       // This reads four continuous holding registers:
       // 0x10, 0x11, 0x12, 0x13
-      const response = await modbusClient.readHoldingRegisters(startAddress, READ_REGISTER_ORDER.length);
+      const response = await modbusClient.readHoldingRegisters(startAddress, READ_ALL_REGISTER_ORDER.length);
 
-      READ_REGISTER_ORDER.forEach((name, index) => {
+      READ_ALL_REGISTER_ORDER.forEach((name, index) => {
         const rawValue = response.data[index];
         const item = buildRegisterResult(name, rawValue);
         results[name] = item;

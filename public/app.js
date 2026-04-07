@@ -1,5 +1,5 @@
 const FIXED_PORT = 502;
-const FIXED_HEARTBEAT_ACS = 0;
+const HEARTBEAT_INTERVAL_MS = 1000;
 
 const READ_REGISTERS = {
   PLC_STATUS: {
@@ -17,6 +17,10 @@ const READ_REGISTERS = {
   ERROR_CODE: {
     address: "0x13",
     description: "Error code"
+  },
+  HEARTBEAT_PLC: {
+    address: "0x14",
+    description: "PLC heartbeat counter"
   }
 };
 
@@ -62,12 +66,20 @@ let currentConnection = {
   errorMessage: ""
 };
 let nextCmdSeq = 1;
+let nextHeartbeatValue = 1;
+let heartbeatTimerId = null;
+let heartbeatRequestInProgress = false;
+let heartbeatErrorShown = false;
+let heartbeatPlcTimerId = null;
+let heartbeatPlcRequestInProgress = false;
+let heartbeatPlcErrorShown = false;
 
 const currentReadResults = {
   PLC_STATUS: null,
   DOOR_STATUS: null,
   CONVEYOR_STATUS: null,
-  ERROR_CODE: null
+  ERROR_CODE: null,
+  HEARTBEAT_PLC: null
 };
 
 const elements = {};
@@ -125,8 +137,10 @@ async function connectToSlave() {
       })
     });
 
-    setConnectionStatus(data.connection, { syncInputs: true });
     resetCmdSeq();
+    resetHeartbeatState();
+    resetHeartbeatPlcState();
+    setConnectionStatus(data.connection, { syncInputs: true });
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -142,6 +156,8 @@ async function disconnectFromSlave() {
 
     setConnectionStatus(data.connection, { syncInputs: true });
     resetCmdSeq();
+    resetHeartbeatState();
+    resetHeartbeatPlcState();
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -253,12 +269,18 @@ function setConnectionStatus(connection, options = {}) {
   if (currentConnection.status === "Connected") {
     elements.connectionStatus.classList.add("status-connected");
     elements.statusMessage.textContent = `${currentConnection.ipAddress}:${currentConnection.port} 에 연결되었습니다.`;
+    startHeartbeatLoop();
+    startHeartbeatPlcLoop();
   } else if (currentConnection.status === "Error") {
     elements.connectionStatus.classList.add("status-error");
     elements.statusMessage.textContent = currentConnection.errorMessage || "통신 오류가 발생했습니다.";
+    stopHeartbeatLoop();
+    stopHeartbeatPlcLoop();
   } else {
     elements.connectionStatus.classList.add("status-disconnected");
     elements.statusMessage.textContent = "연결 전입니다.";
+    stopHeartbeatLoop();
+    stopHeartbeatPlcLoop();
   }
 
   if (syncInputs && currentConnection.ipAddress) {
@@ -382,9 +404,8 @@ function ensureConnectedFromUi() {
 function buildWriteCommandPayload() {
   const cmdCode = elements.cmdCode.value;
   const cmdSeq = nextCmdSeq;
-  const heartbeatAcs = FIXED_HEARTBEAT_ACS;
 
-  if (!validateRegisterValue(String(cmdCode)) || !validateRegisterValue(String(cmdSeq)) || !validateRegisterValue(String(heartbeatAcs))) {
+  if (!validateRegisterValue(String(cmdCode)) || !validateRegisterValue(String(cmdSeq))) {
     throw new Error("숫자 입력값이 허용 범위를 벗어났습니다.");
   }
 
@@ -392,8 +413,7 @@ function buildWriteCommandPayload() {
     mode: "block",
     values: {
       cmdCode: Number(cmdCode),
-      cmdSeq: Number(cmdSeq),
-      heartbeatAcs: Number(heartbeatAcs)
+      cmdSeq: Number(cmdSeq)
     }
   };
 }
@@ -417,6 +437,149 @@ function increaseCmdSeq() {
 
 function resetCmdSeq() {
   nextCmdSeq = 1;
+}
+
+// HEARTBEAT_ACS is written in the background every second while connected.
+// The PLC can watch this value to confirm that the ACS side is still alive.
+function startHeartbeatLoop() {
+  if (heartbeatTimerId || currentConnection.status !== "Connected") {
+    return;
+  }
+
+  heartbeatTimerId = setInterval(() => {
+    sendHeartbeatWrite();
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeatLoop() {
+  if (heartbeatTimerId) {
+    clearInterval(heartbeatTimerId);
+    heartbeatTimerId = null;
+  }
+}
+
+async function sendHeartbeatWrite() {
+  if (heartbeatRequestInProgress || currentConnection.status !== "Connected") {
+    return;
+  }
+
+  const heartbeatValue = nextHeartbeatValue;
+  heartbeatRequestInProgress = true;
+
+  try {
+    const data = await requestJson("/api/write", {
+      method: "POST",
+      body: JSON.stringify({
+        mode: "single",
+        registerName: "HEARTBEAT_ACS",
+        value: heartbeatValue
+      })
+    });
+
+    nextHeartbeatValue = getNextHeartbeatValue(heartbeatValue);
+    heartbeatErrorShown = false;
+    setConnectionStatus(data.connection);
+  } catch (error) {
+    if (error.responseData && error.responseData.connection) {
+      setConnectionStatus(error.responseData.connection);
+    } else {
+      setConnectionStatus({
+        ...currentConnection,
+        status: "Error",
+        errorMessage: error.message || "HEARTBEAT_ACS 전송에 실패했습니다."
+      });
+    }
+
+    if (!heartbeatErrorShown) {
+      showPopup(error.message || "HEARTBEAT_ACS 전송에 실패했습니다.", "error");
+      heartbeatErrorShown = true;
+    }
+  } finally {
+    heartbeatRequestInProgress = false;
+  }
+}
+
+function getNextHeartbeatValue(currentValue) {
+  if (!Number.isInteger(currentValue) || currentValue < 0 || currentValue > 65535) {
+    return 1;
+  }
+
+  if (currentValue >= 65535) {
+    return 0;
+  }
+
+  return currentValue + 1;
+}
+
+function resetHeartbeatState() {
+  stopHeartbeatLoop();
+  nextHeartbeatValue = 1;
+  heartbeatRequestInProgress = false;
+  heartbeatErrorShown = false;
+}
+
+// HEARTBEAT_PLC is read in the background every second while connected.
+// This value is shown in the Read Panel so the operator can confirm the
+// PLC heartbeat is changing without pressing Read manually.
+function startHeartbeatPlcLoop() {
+  if (heartbeatPlcTimerId || currentConnection.status !== "Connected") {
+    return;
+  }
+
+  heartbeatPlcTimerId = setInterval(() => {
+    readHeartbeatPlcInBackground();
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeatPlcLoop() {
+  if (heartbeatPlcTimerId) {
+    clearInterval(heartbeatPlcTimerId);
+    heartbeatPlcTimerId = null;
+  }
+}
+
+async function readHeartbeatPlcInBackground() {
+  if (heartbeatPlcRequestInProgress || currentConnection.status !== "Connected") {
+    return;
+  }
+
+  heartbeatPlcRequestInProgress = true;
+
+  try {
+    const data = await requestJson("/api/read?mode=single&registerName=HEARTBEAT_PLC", {
+      method: "GET"
+    });
+
+    mergeReadResults(data.data);
+    renderReadResults();
+    heartbeatPlcErrorShown = false;
+    setConnectionStatus(data.connection);
+  } catch (error) {
+    if (error.responseData && error.responseData.connection) {
+      setConnectionStatus(error.responseData.connection);
+    } else {
+      setConnectionStatus({
+        ...currentConnection,
+        status: "Error",
+        errorMessage: error.message || "HEARTBEAT_PLC 읽기에 실패했습니다."
+      });
+    }
+
+    if (!heartbeatPlcErrorShown) {
+      showPopup(error.message || "HEARTBEAT_PLC 읽기에 실패했습니다.", "error");
+      heartbeatPlcErrorShown = true;
+    }
+  } finally {
+    heartbeatPlcRequestInProgress = false;
+  }
+}
+
+function resetHeartbeatPlcState() {
+  stopHeartbeatPlcLoop();
+  heartbeatPlcRequestInProgress = false;
+  heartbeatPlcErrorShown = false;
+  currentReadResults.HEARTBEAT_PLC = null;
+  renderReadResults();
 }
 
 function showPopup(message, type) {
