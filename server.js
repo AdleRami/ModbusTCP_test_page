@@ -242,6 +242,7 @@ function createPacketTraceState() {
     originalWrite: null,
     rxListener: null,
     closeListener: null,
+    errorListener: null,
     txBuffer: Buffer.alloc(0),
     rxBuffer: Buffer.alloc(0)
   };
@@ -291,11 +292,26 @@ function attachPacketTraceHandlers() {
   };
 
   packetTraceState.closeListener = () => {
+    const previousStatus = connectionState.status;
     detachPacketTraceHandlers();
+
+    // If the PLC or network drops the socket without the user pressing
+    // Disconnect, update the cached status so the browser badge does not
+    // stay stuck at Connected.
+    if (previousStatus === "Connected") {
+      markDisconnected();
+      appendLog("INFO", "Slave connection was closed.");
+    }
+  };
+
+  packetTraceState.errorListener = (error) => {
+    const message = explainModbusError(error, "socket");
+    markError(message);
   };
 
   socket.on("data", packetTraceState.rxListener);
   socket.on("close", packetTraceState.closeListener);
+  socket.on("error", packetTraceState.errorListener);
 }
 
 function detachPacketTraceHandlers() {
@@ -315,6 +331,10 @@ function detachPacketTraceHandlers() {
 
     if (packetTraceState.closeListener) {
       packetTraceState.socket.off("close", packetTraceState.closeListener);
+    }
+
+    if (packetTraceState.errorListener) {
+      packetTraceState.socket.off("error", packetTraceState.errorListener);
     }
   } catch (error) {
     console.log("Failed to detach packet trace handlers cleanly:", error.message);
@@ -711,6 +731,14 @@ function formatHexAddress(address) {
 
 // Small helper used by multiple API responses.
 function getConnectionStatus() {
+  // connectionState is the UI-facing cache, but the real source of truth
+  // for an active Modbus TCP session is whether the client socket is still open.
+  // This extra guard prevents /api/status from reporting stale Connected
+  // after the socket has already been closed underneath us.
+  if (connectionState.status === "Connected" && !modbusClient.isOpen) {
+    markDisconnected();
+  }
+
   return {
     status: connectionState.status,
     ipAddress: connectionState.ipAddress,
