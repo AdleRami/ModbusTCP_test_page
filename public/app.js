@@ -148,7 +148,7 @@ async function connectToSlave() {
       })
     });
 
-    setConnectionStatus(data.connection);
+    setConnectionStatus(data.connection, { syncInputs: true });
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -162,7 +162,7 @@ async function disconnectFromSlave() {
       method: "POST"
     });
 
-    setConnectionStatus(data.connection);
+    setConnectionStatus(data.connection, { syncInputs: true });
     await refreshLogs();
     showPopup(data.message, "success");
   } catch (error) {
@@ -267,7 +267,9 @@ function validateRegisterValue(value) {
   return value !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535;
 }
 
-function setConnectionStatus(connection) {
+function setConnectionStatus(connection, options = {}) {
+  const syncInputs = Boolean(options.syncInputs);
+
   currentConnection = connection || currentConnection;
 
   elements.connectionStatus.textContent = currentConnection.status;
@@ -284,11 +286,11 @@ function setConnectionStatus(connection) {
     elements.statusMessage.textContent = "연결 전입니다.";
   }
 
-  if (currentConnection.ipAddress) {
+  if (syncInputs && currentConnection.ipAddress) {
     elements.ipAddress.value = currentConnection.ipAddress;
   }
 
-  if (currentConnection.port) {
+  if (syncInputs && currentConnection.port) {
     elements.port.value = currentConnection.port;
   }
 }
