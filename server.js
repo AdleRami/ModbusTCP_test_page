@@ -100,11 +100,13 @@ const REGISTER_DEFINITIONS = {
 const WRITE_REGISTER_ORDER = ["CMD_CODE", "CMD_SEQ", "HEARTBEAT_ACS"];
 const READ_REGISTER_ORDER = ["PLC_STATUS", "DOOR_STATUS", "CONVEYOR_STATUS", "ERROR_CODE"];
 const MAX_LOG_ENTRIES = 300;
+const MIN_MBAP_HEADER_LENGTH = 6;
 
 // One Modbus client instance is kept on the server and reused.
 // The web page acts like a simple control panel for this client.
 let modbusClient = createModbusClient();
 let logEntries = [];
+let packetTraceState = createPacketTraceState();
 
 // Connection state is separated from the actual socket object so that
 // the browser can always ask for a simple JSON status through /api/status.
@@ -234,6 +236,158 @@ function createModbusClient() {
   return client;
 }
 
+function createPacketTraceState() {
+  return {
+    socket: null,
+    originalWrite: null,
+    rxListener: null,
+    closeListener: null,
+    txBuffer: Buffer.alloc(0),
+    rxBuffer: Buffer.alloc(0)
+  };
+}
+
+// For this test tool, raw byte logging is done at the TCP socket level.
+// That means TX/RX logs show the real Modbus TCP frame bytes, not the
+// decoded register text.
+function attachPacketTraceHandlers() {
+  const tcpPort = modbusClient && modbusClient._port;
+  const socket = tcpPort && tcpPort._client;
+
+  if (!socket) {
+    return;
+  }
+
+  if (packetTraceState.socket === socket) {
+    return;
+  }
+
+  detachPacketTraceHandlers();
+
+  packetTraceState.socket = socket;
+  packetTraceState.txBuffer = Buffer.alloc(0);
+  packetTraceState.rxBuffer = Buffer.alloc(0);
+  packetTraceState.originalWrite = socket.write;
+
+  socket.write = function tracedSocketWrite(...args) {
+    const chunk = args[0];
+    const encoding = typeof args[1] === "string" ? args[1] : undefined;
+
+    try {
+      tracePacketChunk("TX", normalizeSocketChunk(chunk, encoding));
+    } catch (error) {
+      console.log("Failed to trace TX packet bytes:", error.message);
+    }
+
+    return packetTraceState.originalWrite.apply(this, args);
+  };
+
+  packetTraceState.rxListener = (data) => {
+    try {
+      tracePacketChunk("RX", data);
+    } catch (error) {
+      console.log("Failed to trace RX packet bytes:", error.message);
+    }
+  };
+
+  packetTraceState.closeListener = () => {
+    detachPacketTraceHandlers();
+  };
+
+  socket.on("data", packetTraceState.rxListener);
+  socket.on("close", packetTraceState.closeListener);
+}
+
+function detachPacketTraceHandlers() {
+  if (!packetTraceState.socket) {
+    packetTraceState = createPacketTraceState();
+    return;
+  }
+
+  try {
+    if (packetTraceState.originalWrite) {
+      packetTraceState.socket.write = packetTraceState.originalWrite;
+    }
+
+    if (packetTraceState.rxListener) {
+      packetTraceState.socket.off("data", packetTraceState.rxListener);
+    }
+
+    if (packetTraceState.closeListener) {
+      packetTraceState.socket.off("close", packetTraceState.closeListener);
+    }
+  } catch (error) {
+    console.log("Failed to detach packet trace handlers cleanly:", error.message);
+  }
+
+  packetTraceState = createPacketTraceState();
+}
+
+function normalizeSocketChunk(chunk, encoding) {
+  if (Buffer.isBuffer(chunk)) {
+    return Buffer.from(chunk);
+  }
+
+  if (typeof chunk === "string") {
+    return Buffer.from(chunk, encoding || "utf8");
+  }
+
+  return Buffer.from(chunk);
+}
+
+function tracePacketChunk(direction, buffer) {
+  if (!buffer || !buffer.length) {
+    return;
+  }
+
+  const bufferKey = direction === "TX" ? "txBuffer" : "rxBuffer";
+  packetTraceState[bufferKey] = Buffer.concat([packetTraceState[bufferKey], buffer]);
+
+  const extracted = extractModbusTcpFrames(packetTraceState[bufferKey]);
+  packetTraceState[bufferKey] = extracted.remaining;
+
+  extracted.frames.forEach((frame) => {
+    appendLog(direction, buildByteLogMessage(frame));
+  });
+}
+
+function extractModbusTcpFrames(buffer) {
+  const frames = [];
+  let offset = 0;
+
+  while (buffer.length - offset >= MIN_MBAP_HEADER_LENGTH) {
+    const lengthField = buffer.readUInt16BE(offset + 4);
+
+    if (lengthField <= 0) {
+      break;
+    }
+
+    const frameLength = MIN_MBAP_HEADER_LENGTH + lengthField;
+
+    if (buffer.length - offset < frameLength) {
+      break;
+    }
+
+    frames.push(Buffer.from(buffer.subarray(offset, offset + frameLength)));
+    offset += frameLength;
+  }
+
+  return {
+    frames,
+    remaining: Buffer.from(buffer.subarray(offset))
+  };
+}
+
+function buildByteLogMessage(frame) {
+  return `Bytes (${frame.length}): ${formatPacketBytes(frame)}`;
+}
+
+function formatPacketBytes(buffer) {
+  return Array.from(buffer)
+    .map((byte) => byte.toString(16).toUpperCase().padStart(2, "0"))
+    .join(" ");
+}
+
 // Connect to the Modbus TCP slave.
 // Why this function exists:
 // - Keeps route logic short
@@ -258,6 +412,7 @@ async function connectToSlave(ipAddress, port) {
     // are still zero-based offsets handled by the library.
     await modbusClient.connectTCP(ipAddress, { port });
     modbusClient.setID(MODBUS_UNIT_ID);
+    attachPacketTraceHandlers();
     markConnected();
     appendLog("INFO", `Connected to ${ipAddress}:${port}`);
   } catch (error) {
@@ -319,7 +474,6 @@ async function writeCommandRegisters(mode, body) {
       await modbusClient.writeRegister(address, value);
 
       const item = buildRegisterResult(registerName, value);
-      appendLog("TX", buildWriteLogMessage(item), item);
       wrote.push(item);
     } else if (mode === "block") {
       const cmdCode = parseRegisterValue(body.values && body.values.cmdCode, "CMD_CODE");
@@ -338,9 +492,6 @@ async function writeCommandRegisters(mode, body) {
       await modbusClient.writeRegisters(startAddress, values);
 
       wrote = WRITE_REGISTER_ORDER.map((registerName, index) => buildRegisterResult(registerName, values[index]));
-      wrote.forEach((item) => {
-        appendLog("TX", buildWriteLogMessage(item), item);
-      });
     } else {
       throw createValidationError("write mode 값이 올바르지 않습니다.");
     }
@@ -382,7 +533,6 @@ async function readStatusRegisters(mode, registerName) {
       const rawValue = response.data[0];
       const item = buildRegisterResult(registerName, rawValue);
 
-      appendLog("RX", buildReadLogMessage(item), item);
       results[registerName] = item;
     } else if (mode === "all") {
       const startAddress = REGISTER_DEFINITIONS.PLC_STATUS.address;
@@ -394,7 +544,6 @@ async function readStatusRegisters(mode, registerName) {
       READ_REGISTER_ORDER.forEach((name, index) => {
         const rawValue = response.data[index];
         const item = buildRegisterResult(name, rawValue);
-        appendLog("RX", buildReadLogMessage(item), item);
         results[name] = item;
       });
     } else {
@@ -555,18 +704,6 @@ function buildRegisterResult(registerName, rawValue) {
   };
 }
 
-// Human-readable TX log format.
-function buildWriteLogMessage(item) {
-  const suffix = item.name ? ` (${item.name})` : "";
-  return `Write Register ${item.address} = ${item.rawValue}${suffix}`;
-}
-
-// Human-readable RX log format.
-function buildReadLogMessage(item) {
-  const suffix = item.name ? ` (${item.name})` : "";
-  return `Read Register ${item.address} = ${item.rawValue}${suffix}`;
-}
-
 // Convert decimal offsets to UI-friendly hex labels such as 0x10.
 function formatHexAddress(address) {
   return `0x${address.toString(16).toUpperCase().padStart(2, "0")}`;
@@ -654,6 +791,8 @@ function explainModbusError(error, action) {
 // Some libraries need a short delay before a reconnect becomes stable.
 async function safeCloseClient() {
   try {
+    detachPacketTraceHandlers();
+
     if (modbusClient && modbusClient.isOpen) {
       modbusClient.close();
       await wait(100);
