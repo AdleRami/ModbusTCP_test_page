@@ -1,4 +1,4 @@
-const FIXED_PORT = 502;
+const DEFAULT_PORT = 502;
 const HEARTBEAT_INTERVAL_MS = 1000;
 
 const READ_REGISTERS = {
@@ -62,7 +62,7 @@ let popupTimer = null;
 let currentConnection = {
   status: "Disconnected",
   ipAddress: "192.168.2.1",
-  port: FIXED_PORT,
+  port: DEFAULT_PORT,
   errorMessage: ""
 };
 let nextCmdSeq = 1;
@@ -99,6 +99,7 @@ function initializePage() {
 
 function cacheElements() {
   elements.ipAddress = document.getElementById("ipAddress");
+  elements.port = document.getElementById("port");
   elements.connectButton = document.getElementById("connectButton");
   elements.disconnectButton = document.getElementById("disconnectButton");
   elements.connectionStatus = document.getElementById("connectionStatus");
@@ -122,9 +123,15 @@ function bindEvents() {
 
 async function connectToSlave() {
   const ipAddress = elements.ipAddress.value.trim();
+  const portValue = elements.port.value.trim();
 
   if (!validateIp(ipAddress)) {
     showPopup("IP 주소 형식이 올바르지 않습니다.", "error");
+    return;
+  }
+
+  if (!validatePort(portValue)) {
+    showPopup("Port 값은 1~65535 범위의 정수여야 합니다.", "error");
     return;
   }
 
@@ -133,7 +140,7 @@ async function connectToSlave() {
       method: "POST",
       body: JSON.stringify({
         ipAddress,
-        port: FIXED_PORT
+        port: Number(portValue)
       })
     });
 
@@ -253,6 +260,11 @@ function validateIp(ipAddress) {
   return ipRegex.test(ipAddress);
 }
 
+function validatePort(portValue) {
+  const port = Number(portValue);
+  return portValue !== "" && Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
 function validateRegisterValue(value) {
   const parsed = Number(value);
   return value !== "" && Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535;
@@ -285,6 +297,10 @@ function setConnectionStatus(connection, options = {}) {
 
   if (syncInputs && currentConnection.ipAddress) {
     elements.ipAddress.value = currentConnection.ipAddress;
+  }
+
+  if (syncInputs && currentConnection.port) {
+    elements.port.value = currentConnection.port;
   }
 }
 
